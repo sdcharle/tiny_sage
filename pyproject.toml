@@ -1,0 +1,21 @@
+[project]
+name = "tiny-sage"
+version = "0.1.0"
+description = "How small can a local model get and still be a useful tool-calling agent?"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.40",
+    "pyyaml>=6.0",
+    "jsonschema>=4.21",
+    "psutil>=5.9",
+    "python-dotenv>=1.0",
+    "pandas>=2.2",
+    "matplotlib>=3.8",
+    "huggingface_hub>=0.24",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

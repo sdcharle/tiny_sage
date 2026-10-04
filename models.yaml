@@ -1,0 +1,146 @@
+# The model ladder.
+#
+# Local models run on bare llama-server (llama.cpp), one model per process, with the pinned flags
+# under `llama_server` below. Start one by hand with `scripts/serve.sh <model>`, or let
+# `run --manage-server` start and stop each model in turn.
+#
+# Before the first run:
+#   uv run python -m harness download --models local      # GGUFs from Hugging Face into models_dir
+#   uv run python -m harness smoke --models all --thinking both
+# `smoke` checks that tool calls come back structured and that thinking really switches on and off.
+#
+# role: ladder (the size curve), reference (ceiling, above the ladder), parity (same model on the other backend)
+# thinking.<mode>: how to switch thinking on/off for this model. Any of:
+#   system_prefix: text put before the system prompt
+#   user_suffix:   text appended to the user prompt
+#   extra_body:    extra JSON fields merged into the API request
+# Leave a mode out if the model can't run that way.
+
+defaults:
+  temperature: 0.0
+  max_turns: 10
+  max_tokens: {off: 1024, on: 4096}   # per model turn
+  context_length: 16384               # passed to llama-server as --ctx-size
+  cooldown_s: 30                      # pause between local models so the laptop can cool down
+  tool_result_log_chars: 2000         # tool results longer than this are truncated in the logs only
+
+llama_server:
+  binary: llama-server                # or set LLAMA_SERVER_BIN
+  # One shared GGUF directory, laid out as <models_dir>/<hf_repo>/<file> (the same layout as
+  # `hf download <repo> --local-dir <models_dir>/<repo>`). Point other llama.cpp-based tools here
+  # too so each model is downloaded once. Override with TINY_SAGE_MODELS_DIR.
+  models_dir: ~/models/gguf
+  host: 127.0.0.1
+  port: 8080
+  # Pinned flags, identical for every local model. true = bare flag, false/null = omitted.
+  flags:
+    --n-gpu-layers: all               # everything on the Apple GPU
+    --flash-attn: "on"
+    --jinja: true                     # the model's own chat template; needed for tool calling
+    --parallel: 1                     # one slot, so the whole context belongs to one task
+    --seed: 42
+    --cache-type-k: f16
+    --cache-type-v: f16
+    --reasoning-format: deepseek      # thinking goes to reasoning_content, not the answer
+    --reasoning-budget: 3072          # cap on thinking tokens per turn (only matters with thinking on)
+
+backends:
+  llamacpp:
+    base_url: from llama_server       # filled in from llama_server.host/port
+    api_key: none
+    local: true
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    local: false
+
+# Local thinking switch: llama-server passes chat_template_kwargs to the model's chat template.
+# Qwen 3.5 and Gemma 4 templates both take enable_thinking. If smoke shows Gemma not thinking with
+# it on, use `on: {system_prefix: "<|think|>\n"}` instead.
+x-local-thinking: &local_thinking
+  on: {extra_body: {chat_template_kwargs: {enable_thinking: true}}}
+  off: {extra_body: {chat_template_kwargs: {enable_thinking: false}}}
+
+x-hosted-thinking: &hosted_thinking
+  on: {extra_body: {reasoning: {max_tokens: 3072}}}
+  off: {extra_body: {reasoning: {enabled: false}}}
+
+models:
+  gemma4-e2b:
+    family: gemma4
+    role: ladder
+    params_b: 2.3          # effective parameters
+    backend: llamacpp
+    hf_repo: unsloth/gemma-4-E2B-it-GGUF
+    gguf: gemma-4-E2B-it-Q4_K_M.gguf
+    quant: Q4_K_M
+    thinking: *local_thinking
+
+  gemma4-e4b:
+    family: gemma4
+    role: ladder
+    params_b: 4.5          # effective parameters
+    backend: llamacpp
+    hf_repo: unsloth/gemma-4-E4B-it-GGUF
+    gguf: gemma-4-E4B-it-Q4_K_M.gguf
+    quant: Q4_K_M
+    thinking: *local_thinking
+
+  gemma4-12b:
+    family: gemma4
+    role: ladder
+    params_b: 12
+    backend: llamacpp
+    hf_repo: unsloth/gemma-4-12b-it-GGUF
+    gguf: gemma-4-12b-it-Q4_K_M.gguf
+    quant: Q4_K_M
+    thinking: *local_thinking
+
+  qwen35-4b:
+    family: qwen35
+    role: ladder
+    params_b: 4
+    backend: llamacpp
+    hf_repo: unsloth/Qwen3.5-4B-GGUF
+    gguf: Qwen3.5-4B-Q4_K_M.gguf
+    quant: Q4_K_M
+    thinking: *local_thinking
+
+  qwen35-9b:
+    family: qwen35
+    role: ladder
+    params_b: 9
+    backend: openrouter
+    model_id: qwen/qwen3.5-9b
+    provider: darkbloom/fp4   # fp4 is the closest match to the local 4-bit models; alt: deepinfra/bf16
+    thinking: *hosted_thinking
+
+  # Parity check: the same Qwen 3.5 9B run locally, compared against the hosted qwen35-9b above.
+  # (Qwen 3.5 4B isn't on OpenRouter, so the 9B is the only model available on both backends.)
+  qwen35-9b-local:
+    family: qwen35
+    role: parity
+    params_b: 9
+    backend: llamacpp
+    hf_repo: unsloth/Qwen3.5-9B-GGUF
+    gguf: Qwen3.5-9B-Q4_K_M.gguf
+    quant: Q4_K_M
+    thinking: *local_thinking
+
+  gemma4-26b-a4b:
+    family: gemma4
+    role: reference
+    params_b: 26           # mixture-of-experts, ~4B active
+    backend: openrouter
+    model_id: google/gemma-4-26b-a4b-it:free
+    provider: google-ai-studio   # the only provider for the free tier
+    thinking: *hosted_thinking
+
+  gemma4-31b:
+    family: gemma4
+    role: reference
+    params_b: 31
+    backend: openrouter
+    model_id: google/gemma-4-31b-it:free
+    provider: google-ai-studio
+    thinking: *hosted_thinking
